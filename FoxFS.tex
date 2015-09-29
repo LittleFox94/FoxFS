@@ -1,0 +1,138 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage{a4wide}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage[linkbordercolor={1 1 1}]{hyperref}
+
+\usepackage[ttdefault]{sourcecodepro}
+\renewcommand{\rmdefault}{ppl}
+
+\setlength{\parindent}{0pt}
+
+\author{Moritz "LittleFox" Grosch}
+\title{FoxFS specification}
+
+\begin{document}
+
+	\maketitle
+	\tableofcontents
+	
+	\setlength{\parskip}{11pt}
+
+	\section{Preface}	
+		\subsection{Why another filesystem?}
+			This filesystem has to be implemented in JavaScript, so it has to be simple. No journaling, no access control lists, no unix permissions, no owner ... and so on.
+			
+			Using something like FAT wasn't an option, because of filesize-limits. Just using 64bit attributes makes FAT very inefficient. We need a better filesystem ... so I started working on FoxFS and got it to a state worth specifying after just 3 days. It is not yet completed and please don't trust it to store your valuable data, but please test it and report errors so I can fix them.
+			
+		\subsection{Design}
+			FoxFS has a layered design: below FoxFS is the block-access layer provided by the device-driver.
+			
+			On top of this is the blockchain-layer, this is the first layer in FoxFS and implements data-storage inside blockchains (not the Bitcoin-ones, but just a chain of blocks e.g. first load block 5, then 7 and then 6).
+			
+			On the foundation of the blockchain-layer, FoxFS builds the filesystem-layer, this is where the actual filesystem is implemented. In the filesystem-layer we have directories, files, file-attributes, ... everything you would expect from a filesystem.
+	
+	\section{Datastructures in FoxFS}
+		\subsection{inode}
+			An inode is a simple structure, which points to a data-block and the following inode. It is used to build the blockchains, where we put all the data. The format is shown in table \ref{tab:1}.
+			
+			\begin{table}[ht]
+				\caption{Format of an inode}\label{tab:1}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Field} 					& \textbf{Datatype} 		& \textbf{Description} \\ \hline
+					\verb|block_idx| 				& unsigned 64bit integer 	& The block containing the data for this inode \\ \hline
+					\verb|next_inode_block_idx| 	& unsigned 64bit integer 	& The block containing the next inode \\ \hline
+					\verb|next_inode_offset| 		& unsigned 32bit integer	& The offset of the inode in the block, given in bytes \\ \hline
+					\verb|reserved|					& 12 bytes					& Has to be set to 0 all the time \\ \hline
+				\end{tabularx}
+			\end{table}
+			
+			The data associated with the inode can be found in the block referenced by \verb|block_idx|. The next inode can be found with the \verb|next_inode_*|-fields, if there is no following inode, these are set to 0.
+		
+			To get all data in a blockchain, read the block referenced by the first inode, get the next inode, load the block referenced in that inode, get the next inode, ... until there is no following inode.
+			
+			Inodes are identified by the block where they are stored and the offset from the beginning of the block given as inode-index.
+			
+			There are some special inodes, these are described in table \ref{tab:2}.		
+		
+			\begin{table}[ht]
+				\caption{Special inodes}\label{tab:2}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Block} 	& \textbf{Offset} 	& \textbf{Usage} \\ \hline
+					0				& 0 				& Points to the blockchain of the root-directory \\ \hline
+					0				& 1 				& Points to the blockchain of the free-space bitmapt \\ \hline
+					0				& 2					& Points to the inode-blockchain \\ \hline
+					0				& 2					& Points to the blockchain for the filesystem-metadata directory \\ \hline
+				\end{tabularx}
+			\end{table}
+		
+		\subsection{Free-space bitmap}
+			It's a bitmap with a flag for every block in the filesystem. It just tells us if the block is available (= 1) or unavailable (= 0). It can be used to find a free block to store new data.
+			
+			A block can be unavailable for many reasons, for example damage or it is just already used. In either way, it is always just marked as unavailable, it's not our department to track disk-health.
+		
+		\subsection{Directories}
+			This is the core-function of every filesystem: mapping filenames and metadata to actual filecontent.
+			
+			Directories in FoxFS are stored in a blockchain. Actually, there isn't any difference between directories and files. Directories are just files with a fileformat known by the filesystem-driver.
+			
+			The format of directories is specified in table \ref{tab:3}. All entries are saved without holes in the structure, making the files less fragmented and less space-consuming. This way, we only need to save the number of entries and not their position or a valid flag in every entry. If a driver deletes an entry, it has to fill the hole with other entries. The order of the entries is guaranted not to be preserved.			
+			
+			As you can see in table \ref{tab:4}, a directory-entry only contains references to inodes. There is one inode for the data-blockchain, which contains the actual file content and another inode for metadata-blockchain.
+			
+			With this design, we can store an arbitrary amount of metadata in the filesystem, much more than the normal filename, size and different timestamps - we could store changelogs or diffs there for example.
+			
+			\begin{table}[ht]
+				\caption{Structure of a directory}\label{tab:3}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Field}		& \textbf{Datatype}								& \textbf{Description} \\ \hline
+					num\_entries		& unsigned 64bit integer						& The number of entries in this directory \\ \hline
+					children\_size		& unsigned 64bit integer						& Last known size of all children \\ \hline
+					entries				& array of structure defined in table \ref{tab:4}	& The actual entries in this directory \\ \hline
+				\end{tabularx}
+			\end{table}
+		
+			\begin{table}[ht]
+				\caption{Structure of an fileentry}\label{tab:4}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Field}					& \textbf{Datatype}				& \textbf{Description} \\ \hline
+					\verb|content_inode_block_idx|	& unsigned 64bit integer		& Block containing the inode for the content-blockchain \\ \hline
+					\verb|content_inode_offset|		& unsigned 32bit integer		& Offset of the inode in the block given in content\_inode\_block\_idx \\ \hline
+					\verb|meta_inode_block_idx|		& unsigned 64bit integer		& Block containing the inode for the metadata-blockchain \\ \hline
+					\verb|meta_inode_offset|		& unsigned 32bit integer		& Offset of the inode in the block given in meta\_inode\_block\_idx \\ \hline
+					\verb|filename|					& unsigned 8bit integer[30]		& Name of the file. If the name is longer, it is stored in the metadata and this field is filled with zeros. The name is stored as UTF-8 and without trailing zero. \\ \hline
+					\verb|size|						& unsigned 64bit integer		& Size of the file given in bytes	\\ \hline
+					\verb|attributes|				& unsigned 16bit integer		& some attributes:
+						\begin{itemize}
+							\item 0x01
+							Entry is a directory
+							\item 0x02
+							Entry is a file
+						\end{itemize} \\ \hline
+					\verb|reserved|				& unsigned 8bit integer		& reserved for future use. Set to 0 on write and keep value on update. \\ \hline
+				\end{tabularx}
+			\end{table}		
+			
+		\subsection{File-metadata}
+			This is the structure stored in the meta-blockchain and referenced by every file.
+			
+			\begin{table}[ht]
+				\caption{Metadata structure}\label{tab:5}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Field}		& \textbf{Datatype}			& \textbf{Description}	\\ \hline
+					\verb|magic|			& unsigned 32bit integer	& 'M3TA' \\ \hline
+					\verb|num_entries|	& unsigned 64bit integer	& Number of metadata-entries \\ \hline
+				\end{tabularx}
+			\end{table}
+		
+	\section{The layers of FoxFS}
+		\subsection{Block-layer}
+			This is actually not a layer from FoxFS, but the layer below it. FoxFS needs just three functions in this layer: storeBlock, loadBlock and getNumBlocks - everything else is implemented on these. FoxFS also supports the trimBlock function, enabling the blocklayer to know which blocks are free.
+		\subsection{Blockchain-layer}
+			This is the first layer in FoxFS. It implements chains of blocks to store data in. Everything in FoxFS is stored in such a blockchain.
+			
+			Blockchains are identified by the inode pointing to their first block.
+	
+\end{document}
