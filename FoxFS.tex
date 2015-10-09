@@ -35,41 +35,56 @@
 			On the foundation of the blockchain-layer, FoxFS builds the filesystem-layer, this is where the actual filesystem is implemented. In the filesystem-layer we have directories, files, file-attributes, ... everything you would expect from a filesystem.
 	
 	\section{Datastructures in FoxFS}
-		\subsection{inode}
-			An inode is a simple structure, which points to a data-block and the following inode. It is used to build the blockchains, where we put all the data. The format is shown in table \ref{tab:1}.
+		\subsection{superblock}
+			The superblock contains indispensable filesystem management information. It starts with a bit of magic(numbers) to make identifying the filesystem type easy, followed by a version number(currently 1). Incompatible changes to filesystem structures should be acompanied by an incremented version number. If a filesystem driver encounters a version number it doesn't know, it must not execute any write operations and emit a warning. It may however read the contents of the filesystem (possibly wrongly) or it may emit an error message and not read the filesystem at all.
+
+			The superblock also contains the blocksize of the filesystem. A driver should obey the blocksize specified in the superblock unless the user overrides it.
+
+			The last components of the superblock are "pointers"(block ids and offsets) to special blockchains.
+
+			The superblock must always be located in block 0. The presence and behavior of aditional copies is unspecified.
+
+			\begin{table}[ht]
+				\caption{Format of the superblock}\label{tab:0}
+				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
+					\textbf{Field} 					& \textbf{Datatype} 		& \textbf{Description} \\ \hline
+					\verb|magic| 				& char[4] 	& magic number 'FFSS' (FoxFS Superblock) \\ \hline
+					\verb|version| 				& unsigned 8bit integer 	& the filesystem version \\ \hline
+					\verb|reserved| 	& 24 bit 	& reserved for future expansion \\ \hline
+					\verb|block_size| 		& unsigned 32bit integer	&  \\ \hline
+					\verb|root_dir_block_idx|					& unsigned 64bit integer					&  \\ \hline
+					\verb|root_dir_offset|					& unsigned 32bit integer				&  \\ \hline
+					\verb|free_space_chain_block_idx|					& unsigned 64bit integer					&  \\ \hline
+					\verb|free_space_chain_offset|					& unsigned 32bit integer				&  \\ \hline
+					\verb|fs_metadata_block_idx|					& unsigned 64bit integer					&  \\ \hline
+					\verb|fs_metadata_offset|					& unsigned 32bit integer				&  \\ \hline
+
+				\end{tabularx}
+			\end{table}
+
+ 		\subsection{inode}
+			An inode is a simple structure, which points to a continuous area of data-blocks and the following inode. It is used to build the blockchains, where we put all the data, and the free space map which keeps track of unused blocks. The format is shown in table \ref{tab:2}.
 			
 			\begin{table}[ht]
-				\caption{Format of an inode}\label{tab:1}
+				\caption{Format of an inode}\label{tab:2}
 				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
 					\textbf{Field} 					& \textbf{Datatype} 		& \textbf{Description} \\ \hline
 					\verb|block_idx| 				& unsigned 64bit integer 	& The block containing the data for this inode \\ \hline
+					\verb|length| 				& unsigned 64bit integer 	& the length of this block area in blocks \\ \hline
 					\verb|next_inode_block_idx| 	& unsigned 64bit integer 	& The block containing the next inode \\ \hline
 					\verb|next_inode_offset| 		& unsigned 32bit integer	& The offset of the inode in the block, given in bytes \\ \hline
-					\verb|reserved|					& 12 bytes					& Has to be set to 0 all the time \\ \hline
+					\verb|magic|					& 4 bytes					& Magic number should be set to 'NODE' on write and checked on read \\ \hline
 				\end{tabularx}
 			\end{table}
 			
-			The data associated with the inode can be found in the block referenced by \verb|block_idx|. The next inode can be found with the \verb|next_inode_*|-fields, if there is no following inode, these are set to 0.
+			The data associated with the inode can be found in the blocks referenced by \verb|block_idx| and \verb|length|. The next inode can be found with the \verb|next_inode_*|-fields, if there is no following inode, these are set to 0.
 		
-			To get all data in a blockchain, read the block referenced by the first inode, get the next inode, load the block referenced in that inode, get the next inode, ... until there is no following inode.
+			To get all data in a blockchain, read the blocks referenced by the first inode, get the next inode, load the blocks referenced in that inode, get the next inode, ... until there is no following inode.
 			
 			Inodes are identified by the block where they are stored and the offset from the beginning of the block given as inode-index.
-			
-			There are some special inodes, these are described in table \ref{tab:2}.		
 		
-			\begin{table}[ht]
-				\caption{Special inodes}\label{tab:2}
-				\begin{tabularx}{\linewidth}{|l|l|X|} \hline
-					\textbf{Block} 	& \textbf{Offset} 	& \textbf{Usage} \\ \hline
-					0				& 0 				& Points to the blockchain of the root-directory \\ \hline
-					0				& 1 				& Points to the blockchain of the free-space bitmapt \\ \hline
-					0				& 2					& Points to the inode-blockchain \\ \hline
-					0				& 2					& Points to the blockchain for the filesystem-metadata directory \\ \hline
-				\end{tabularx}
-			\end{table}
-		
-		\subsection{Free-space bitmap}
-			It's a bitmap with a flag for every block in the filesystem. It just tells us if the block is available (= 1) or unavailable (= 0). It can be used to find a free block to store new data.
+		\subsection{free space chain}
+			A special blockchain which does not contain data but instead only references free blocks. Like ordinary blockchains, it is composed of Inodes and can be used to find an available block to store new data.
 			
 			A block can be unavailable for many reasons, for example damage or it is just already used. In either way, it is always just marked as unavailable, it's not our department to track disk-health.
 		
